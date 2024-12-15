@@ -180,7 +180,7 @@ const parseUri = (uri) => {
   const parts = new URL(uri);
 
   switch (parts.protocol) {
-    case 'tcp:': return {host: parts.host, port: parts.port};
+    case 'tcp:': return {host: parts.hostname, port: parts.port};
     case 'unix:': return {path: parts.pathname};
     default: throw new Error(`unsupported protocol ${parts.protocol}`);
   }

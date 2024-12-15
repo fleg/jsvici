@@ -59,6 +59,7 @@ class ViciClient extends EventEmitter {
 
     this.conn = conn;
     this.reconnect = reconnect;
+    this.calling = false;
   }
 
   close() {
@@ -105,49 +106,65 @@ class ViciClient extends EventEmitter {
   }
 
   async register(name) {
-    const data = encodePacket(PACKET_EVENT_REGISTER, name);
-    await this.write(data);
-    const packet = await this.waitFor([PACKET_EVENT_CONFIRM, PACKET_EVENT_UNKNOWN]);
-
-    if (packet.type === PACKET_EVENT_UNKNOWN) {
-      throw new Error(`unknown event ${name}`);
-    }
+    await this.call(name, {}, {
+      req: PACKET_EVENT_REGISTER,
+      res: PACKET_EVENT_CONFIRM,
+      err: PACKET_EVENT_UNKNOWN,
+    });
   }
 
   async unregister(name) {
-    const data = encodePacket(PACKET_EVENT_UNREGISTER, name);
-    await this.write(data);
-    const packet = await this.waitFor([PACKET_EVENT_CONFIRM, PACKET_EVENT_UNKNOWN]);
+    await this.call(name, {}, {
+      req: PACKET_EVENT_UNREGISTER,
+      res: PACKET_EVENT_CONFIRM,
+      err: PACKET_EVENT_UNKNOWN,
+    });
+  }
 
-    if (packet.type === PACKET_EVENT_UNKNOWN) {
-      throw new Error(`unknown event ${name}`);
+  async call(name, args, types) {
+    if (this.calling) {
+      throw new Error('only one command can be active at a time');
+    }
+    
+    this.calling = true;
+
+    try {
+      const data = encodePacket(types.req, name, args);
+      await this.write(data);
+      const packet = await this.waitFor([types.res, types.err]);
+
+      if (packet.type === types.err) {
+        throw new Error(`unknown command or event: ${name}`);
+      }
+
+      return packet.payload;
+    } finally {
+      this.calling = false;
     }
   }
 
-  async call(name, args) {
-    const data = encodePacket(PACKET_CMD_REQUEST, name, args);
-    await this.write(data);
-    const packet = await this.waitFor([PACKET_CMD_RESPONSE, PACKET_CMD_UNKNOWN]);
+  async doCommand(name, args) {
+    const payload = await this.call(name, args, {
+      req: PACKET_CMD_REQUEST,
+      res: PACKET_CMD_RESPONSE,
+      err: PACKET_CMD_UNKNOWN,
+    });
 
-    if (packet.type === PACKET_CMD_UNKNOWN) {
-      throw new Error(`unknown command ${name}`);
-    }
-
-    return packet.payload;
+    return payload;
   }
 
-  async streamingCall(name, eventName, args) {
+  async doStreamingCommand(name, eventName, args) {
     try {
       await this.register(eventName);
 
-      const events = [];
-      const handler = (event) => events.push(event);
+      const payloads = [];
+      const handler = (payload) => payloads.push(payload);
 
       this.on(eventName, handler);
-      await this.call(name, args);
+      await this.doCommand(name, args);
       this.off(eventName, handler);
 
-      return events;
+      return payloads;
     } finally {
       await this.unregister(eventName);
     }
@@ -404,20 +421,25 @@ const main = async () => {
     console.log(err.message);
   });
 
-  // const version = await client.call('version');
-  // const stats = await client.call('stats');
-  // //const unk = await client.call('unk');
+  const version = await client.doCommand('version');
+  const stats = await client.doCommand('stats');
+  
+  try {
+    await client.doCommand('unk');
+  } catch (err) {
+    console.log(err.stack);
+  }
 
-  // console.log(version);
-  // console.log(stats);
+  console.log(version);
+  console.log(stats);
 
-  const conns = await client.streamingCall('list-conns', 'list-conn', {
-    ike: 'test'
+  const conns = await client.doStreamingCommand('list-conns', 'list-conn', {
+    ike: '*'
   });
 
   console.log(conns);
 
-  //await client.close();
+  await client.close();
 };
 
 main().catch(console.error);

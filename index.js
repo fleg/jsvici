@@ -23,7 +23,10 @@ class ViciClient extends EventEmitter {
     //conn.setTimeout(500);
     conn.on('error', (err) => this.emit('error', err));
     conn.on('data', (data) => {
-      const packets = decodePackets(data);
+      const chunk = this.leftover ? Buffer.concat([this.leftover, data]) : data;
+      const {packets, leftover} = decodePackets(chunk);
+
+      this.leftover = leftover;
 
       for (const packet of packets) {
         this.emit('packet', packet);
@@ -290,20 +293,26 @@ const decodePackets = (buf) => {
   let offset = 0;
   let length = buf.length;
   const packets = [];
+  let leftover = null;
 
   while (offset < length) {
     const packetSize = buf.readUInt32BE(offset);
     offset += 4;
 
     if (packetSize > length - offset) {
-      throw new Error('segmented packets are not supported');
+      // revert offset to pass size to leftover chunk
+      leftover = buf.subarray(offset - 4);
+      break;
     }
 
     packets.push(decodePacket(buf.subarray(offset, offset + packetSize)));
     offset += packetSize;
   }
 
-  return packets;
+  return {
+    packets,
+    leftover,
+  };
 };
 
 const decodePacket = (buf) => {
@@ -411,7 +420,7 @@ const isPlainObject = obj => obj && obj.constructor === Object;
 
 const main = async () => {
   const client = await ViciClient.create({
-    uri: 'unix:///var/run/charon.vici',
+    uri: 'tcp://127.0.0.1:4502',
     reconnect: true,
   });
 

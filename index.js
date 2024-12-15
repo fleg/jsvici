@@ -1,32 +1,141 @@
 const net = require('net');
+const {EventEmitter} = require('events');
 
-const conn = net.createConnection('/var/run/charon.vici');
+class ViciClient extends EventEmitter {
+  static create(uri) {
+    const vici = new ViciClient(uri);
 
-conn.on('connect', () => {
-  console.log('connected');
-  
-  conn.write(encodePacket(PACKET_EVENT_REGISTER, {name: 'list-conn'}));
-  
-  // oh well
-  setTimeout(() => {
-    conn.write(encodePacket(PACKET_CMD_REQUEST, {
-      cmd: 'list-conns',
-      args: {
-        ike: 'test'
+    return new Promise((resolve, reject) => {
+      vici.conn.once('connect', () => {
+        resolve(vici);
+      });
+      vici.conn.once('error', reject);
+    });
+  }
+
+  constructor(uri) {
+    super();
+
+    const conn = net.createConnection(parseUri(uri));
+    
+    conn.on('error', (err) => this.emit('error', err));
+    conn.on('data', (data) => {
+      const packets = decodePackets(data);
+
+      for (const packet of packets) {
+        this.emit('packet', packet);
       }
-    }));
-  }, 1000);
+    });
 
-});
+    this.on('packet', (packet) => {
+      if (packet.type === PACKET_EVENT) {
+        this.emit(packet.event, packet.payload);
+      }
+    });
 
-conn.on('error', (err) => {
-  console.error(err);
-});
+    this.conn = conn;
+  }
 
-conn.on('data', (buf) => {
-  //console.log(buf.length, buf.toString('hex'));
-  console.log(decodeStream(buf));
-});
+  close() {
+    return new Promise((resolve, reject) => {
+      this.conn.destroy();
+      this.conn.once('close', resolve);
+      this.conn.once('error', reject);
+    });
+  }
+
+  write(data) {
+    return new Promise((resolve, reject) => {
+      this.conn.write(data, 'ascii', (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+
+  waitFor(packetTypes) {
+    return new Promise((resolve, reject) => {
+      const handler = (packet) => {
+        if (packetTypes.includes(packet.type)) {
+          clean();
+          resolve(packet);
+        }
+      };
+
+      const errorHandler = (err) => {
+        clean();
+        reject(err);
+      };
+
+      const clean = () => {
+        this.off('packet', handler);
+        this.off('error', errorHandler);
+      };
+
+      this.on('packet', handler);
+      this.on('error', errorHandler);
+    });
+  }
+
+  async register(name) {
+    const data = encodePacket(PACKET_EVENT_REGISTER, name);
+    await this.write(data);
+    const packet = await this.waitFor([PACKET_EVENT_CONFIRM, PACKET_EVENT_UNKNOWN]);
+
+    if (packet.type === PACKET_EVENT_UNKNOWN) {
+      throw new Error(`unknown event ${name}`);
+    }
+  }
+
+  async unregister(name) {
+    const data = encodePacket(PACKET_EVENT_UNREGISTER, name);
+    await this.write(data);
+    const packet = await this.waitFor([PACKET_EVENT_CONFIRM, PACKET_EVENT_UNKNOWN]);
+
+    if (packet.type === PACKET_EVENT_UNKNOWN) {
+      throw new Error(`unknown event ${name}`);
+    }
+  }
+
+  async call(name, args) {
+    const data = encodePacket(PACKET_CMD_REQUEST, name, args);
+    await this.write(data);
+    const packet = await this.waitFor([PACKET_CMD_RESPONSE, PACKET_CMD_UNKNOWN]);
+
+    if (packet.type === PACKET_CMD_UNKNOWN) {
+      throw new Error(`unknown command ${name}`);
+    }
+
+    return packet.payload;
+  }
+
+  async streamingCall(name, eventName, args) {
+    try {
+      await this.register(eventName);
+
+      const events = [];
+      const handler = (event) => events.push(event);
+
+      this.on(eventName, handler);
+      await this.call(name, args);
+      this.off(eventName, handler);
+
+      return events;
+    } finally {
+      await this.unregister(eventName);
+    }
+  }
+}
+
+const parseUri = (uri) => {
+  const parts = new URL(uri);
+
+  switch (parts.protocol) {
+    case 'tcp:': return {host: parts.host, port: parts.port};
+    case 'unix:': return {path: parts.pathname};
+    default: throw new Error(`unsupported protocol ${parts.protocol}`);
+  }
+}
 
 // packet types
 const PACKET_CMD_REQUEST = 0;
@@ -46,7 +155,7 @@ const ELEMENT_LIST_START = 4;
 const ELEMENT_LIST_ITEM = 5;
 const ELEMENT_LIST_END = 6;
 
-const encodePacket = (type, {name, cmd, args}) => {
+const encodePacket = (type, name, args) => {
   const length = 1024;
   const buf = Buffer.alloc(length);
   let offset = 0;
@@ -106,7 +215,7 @@ const encodePacket = (type, {name, cmd, args}) => {
       writeString16(String(item));
     }
     writeUInt8(ELEMENT_LIST_END);
-  }
+  };
 
   const makePacket = () => {
     const packet = Buffer.concat([
@@ -117,26 +226,18 @@ const encodePacket = (type, {name, cmd, args}) => {
     return packet;
   };
 
-  switch (type) {
-    case PACKET_EVENT_REGISTER:
-      writeUInt8(PACKET_EVENT_REGISTER);
-      writeString8(name);
-      break;
 
-    case PACKET_CMD_REQUEST:
-      writeUInt8(PACKET_CMD_REQUEST);
-      writeString8(cmd);
-      if (args && !isEmptyObject(args)) {
-        writeUInt8(ELEMENT_SECTION_START);
-        writeSection(args);
-      }
-      break;
+  writeUInt8(type);
+  writeString8(name);
+  if (args && !isEmptyObject(args)) {
+    writeUInt8(ELEMENT_SECTION_START);
+    writeSection(args);
   }
 
   return makePacket(buf, offset);
 };
 
-const decodeStream = (buf) => {
+const decodePackets = (buf) => {
   let offset = 0;
   let length = buf.length;
   const packets = [];
@@ -257,3 +358,25 @@ const isEmptyObject = (obj) => Object.keys(obj).length === 0;
 const isString = (str) => typeof str === 'string';
 const isArray = (a) => Array.isArray(a);
 const isPlainObject = obj => obj && obj.constructor === Object;
+
+
+const main = async () => {
+  const client = await ViciClient.create('unix:///var/run/charon.vici');
+
+  // const version = await client.call('version');
+  // const stats = await client.call('stats');
+  // //const unk = await client.call('unk');
+
+  // console.log(version);
+  // console.log(stats);
+
+  const conns = await client.streamingCall('list-conns', 'list-conn', {
+    ike: 'test'
+  });
+
+  console.log(conns);
+
+  //await client.close();
+};
+
+main().catch(console.error);

@@ -2,22 +2,25 @@ const net = require('net');
 const {EventEmitter} = require('events');
 
 class ViciClient extends EventEmitter {
-  static create(uri) {
-    const vici = new ViciClient(uri);
+  static create(opts) {
+    const vici = new ViciClient(opts);
 
     return new Promise((resolve, reject) => {
       vici.conn.once('connect', () => {
+        vici.conn.off('error', reject);
         resolve(vici);
       });
       vici.conn.once('error', reject);
     });
   }
 
-  constructor(uri) {
+  constructor(opts) {
     super();
 
-    const conn = net.createConnection(parseUri(uri));
+    const {socketOptions, reconnect} = parseOpts(opts);
+    const conn = net.createConnection(socketOptions);
     
+    //conn.setTimeout(500);
     conn.on('error', (err) => this.emit('error', err));
     conn.on('data', (data) => {
       const packets = decodePackets(data);
@@ -33,10 +36,34 @@ class ViciClient extends EventEmitter {
       }
     });
 
+
+    conn.on('close', () => {
+      if (!this.reconnect || this.connecting) return;
+      console.log('lost connection, trying to reconnect...');
+
+      const errorHandler = (err) => {
+        console.log('connection error:', err.message);
+        setTimeout(() => this.conn.connect(socketOptions), 1000);
+      };
+
+      this.conn.once('connect', () => {
+        this.conn.off('error', errorHandler);
+        this.connecting = false;
+        console.log('successfully reconected');
+      });
+      this.conn.on('error', errorHandler);
+      this.conn.connect(socketOptions);
+      this.connecting = true;
+    });
+
+
     this.conn = conn;
+    this.reconnect = reconnect;
   }
 
   close() {
+    this.reconnect = false;
+
     return new Promise((resolve, reject) => {
       this.conn.destroy();
       this.conn.once('close', resolve);
@@ -126,6 +153,11 @@ class ViciClient extends EventEmitter {
     }
   }
 }
+
+const parseOpts = ({uri, reconnect}) => ({
+  socketOptions: parseUri(uri),
+  reconnect: Boolean(reconnect),
+})
 
 const parseUri = (uri) => {
   const parts = new URL(uri);
@@ -361,7 +393,16 @@ const isPlainObject = obj => obj && obj.constructor === Object;
 
 
 const main = async () => {
-  const client = await ViciClient.create('unix:///var/run/charon.vici');
+  const client = await ViciClient.create({
+    uri: 'unix:///var/run/charon.vici',
+    reconnect: true,
+  });
+
+  client.on('error', (err) => {
+    if (err.code === 'ECONNREFUSED') return;
+
+    console.log(err.message);
+  });
 
   // const version = await client.call('version');
   // const stats = await client.call('stats');

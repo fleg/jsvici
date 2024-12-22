@@ -47,7 +47,7 @@ const test = async () => {
     ike: '*'
   });
 
-  console.log(conns);
+  console.dir(conns, {depth: null});
 
   await client.close();
 };

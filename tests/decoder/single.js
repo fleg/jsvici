@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const {Decoder} = require('../../lib/decoder');
+const {PacketsDecoder} = require('../../lib/decoder');
 
 test('decode single packet', async (t) => {
   const testCases = [
@@ -160,7 +160,7 @@ test('decode single packet', async (t) => {
 
   for (const tc of testCases) {
     await t.test(`packet ${tc.encoded.slice(0, 16)}...`, () => {
-      const decoder = new Decoder();
+      const decoder = new PacketsDecoder();
 
       assert.deepStrictEqual(
         decoder.decode(Buffer.from(tc.encoded, 'hex')),

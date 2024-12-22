@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const {Decoder} = require('../../lib/decoder');
+const {PacketsDecoder} = require('../../lib/decoder');
 
 test('decode segmented packets', (t) => {
   const chunks = [
@@ -130,7 +130,7 @@ test('decode segmented packets', (t) => {
     { size: 1, type: 1, event: null, payload: {} }
   ];
 
-  const decoder = new Decoder();
+  const decoder = new PacketsDecoder();
   let decoded = [];
 
   for (const chunk of chunks) {

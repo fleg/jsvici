@@ -1,0 +1,21 @@
+{
+  "name": "vici-client",
+  "version": "1.0.0",
+  "description": "strongswans charon vici protocol client",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "node --test \"tests/**/*.js\""
+  },
+  "keywords": [
+    "charon",
+    "vici",
+    "strongswan",
+    "ipsec"
+  ],
+  "author": "fleg",
+  "license": "ISC"
+}

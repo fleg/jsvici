@@ -17,5 +17,7 @@
     "ipsec"
   ],
   "author": "fleg",
+  "repository": "github:fleg/vici-client",
+  "homepage": "https://github.com/fleg/jsvici",
   "license": "ISC"
 }
